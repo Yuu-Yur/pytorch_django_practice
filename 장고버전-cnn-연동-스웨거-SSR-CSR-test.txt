@@ -1,0 +1,513 @@
+#장고_cnn_연동
+
+참고 깃 주소 
+https://github.com/lsy3709/Django_busanit501_Test/tree/main/pytorch-cnn-test3
+
+CNN 학습된 모델, 장고 탑재, 
+간단한 REST API 서비스 만들어 보기. 
+
+준비물. 
+1. 학습된 모델 필요(샘플 모델, 망치, 니퍼 각각 400장으로 학습된모델)
+2. 파이참 프로~ , 간단한 레스트 구성. (새로운 장고 프로젝트 생성)
+3. 웹 -> 서버 , 파일 이미지 전달, 
+4. 결괏값을 받아서, 어느 클래스인지?, 정확도? 
+
+장고 구성 준비물 
+아나콘다 환경에서, Pytorch 가상환경을 이미 만들었음. 
+여기 가상환경에 패키지 있음. 
+
+자동 구성이 안될시. 
+직접 
+- 새로운 앱 등록. 
+- 프로젝트 초기화.
+
+1 프로젝트 초기화.(자동 구성이 안될 경우 하기.)
+django-admin startproject config .
+
+2 새로운 앱 등록.
+django-admin startapp cnnTest
+
+3 장고 패키지 설치. (Pytorch 에 미설치시 진행)
+pip install django
+
+4 토치 관련 도구 설치. (Pytorch 에 미설치시 진행)
+pip install torch torchvision pillow
+
+5 , 새롭게 추가한 앱등록
+
+config/settings.py 
+
+INSTALLED_APPS = [
+    'cnnTest',
+	...
+
+6 , 파일 이미지 업로드할 프로젝트 내 저장소 등록. 
+
+config/settings.py 
+media 등록, 
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media/')
+
+7 터미널에서
+변경 사항 적용
+python manage.py migrate
+
+8 터미널에서
+서버 실행
+python manage.py runserver
+=====================================================
+해당 프로젝트에 내부에, 모델 복사하기.
+
+
+
+모델 세팅 및 화면 작업 
+
+1. 
+cnnTest/models.py 
+
+from django.db import models
+
+# Create your models here.
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from django.db import models
+
+# CNN 모델 정의 (Hammer, Nipper 분류)
+class CustomCNN(nn.Module):
+    def __init__(self, num_classes=2):
+        super(CustomCNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc1 = nn.Linear(64 * 56 * 56, 512)
+        self.fc2 = nn.Linear(512, num_classes)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(-1, 64 * 56 * 56)  # Flatten
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+# 모델 로드 함수
+def load_model():
+    import os
+    from config import settings
+    model_path = os.path.join(settings.BASE_DIR, "custom_cnn.pth")
+    model = CustomCNN(num_classes=2)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    model.eval()
+    return model
+
+
+2
+config/forms.py , 새로 생성. 
+
+from django import forms
+
+class ImageUploadForm(forms.Form):
+    image = forms.ImageField()
+
+3
+cnnTest/views.py 
+
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+import json
+from django.shortcuts import render
+from django.http import JsonResponse
+from .models import load_model
+from .forms import ImageUploadForm
+
+# CNN 모델 로드
+model = load_model()
+
+# 클래스 이름
+class_names = ["Hammer", "Nipper"]
+
+# 이미지 전처리
+def transform_image(image):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+    return transform(image).unsqueeze(0)  # 배치 차원 추가
+
+# API: 이미지 업로드 및 분류
+def classify_image(request):
+    if request.method == "POST":
+        form = ImageUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            image_file = request.FILES["image"]
+            image = Image.open(image_file)
+            image = transform_image(image)
+
+            # 모델 예측
+            with torch.no_grad():
+                output = model(image)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
+                predicted_idx = torch.argmax(probabilities).item()
+                confidence = probabilities[predicted_idx].item()
+
+            response_data = {
+                "class": class_names[predicted_idx],
+                "confidence": round(confidence * 100, 2),
+            }
+            return JsonResponse(response_data)
+
+    return JsonResponse({"error": "Invalid request"}, status=400)
+
+
+4
+config/urls.py 
+
+from cnnTest.views import classify_image
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('classify/', classify_image, name='classify_image' ),
+    
+]
+
+
+5
+새 프로젝트 생성시, 자동 구성이 안되었다면, 
+templates 폴더 생성. 
+
+- TEMPLATES_DIR 설정 
+- config/settings.py 
+- 17라인, 추가
+- TEMPLATES_DIR = BASE_DIR / 'templates'
+- 58라인, 수정
+- 'DIRS': [TEMPLATES_DIR],
+
+간단한 index.html 추가해서, 
+파일 업로드 폼 추가. 
+결괏값 확인 요소 추가. 
+
+
+6.
+index.html 
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Hammer / Nipper 분류기</title>
+    <script>
+        function uploadImage() {
+            let formData = new FormData();
+            let imageFile = document.getElementById("imageInput").files[0];
+            formData.append("image", imageFile);
+
+            fetch("/classify/", {
+                method: "POST",
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("result").innerHTML = 
+                    `<h3>결과: ${data.class} (${data.confidence}%)</h3>`;
+            })
+            .catch(error => console.error("Error:", error));
+        }
+    </script>
+</head>
+<body>
+    <h1>Hammer / Nipper 분류기</h1>
+    <input type="file" id="imageInput">
+    <button onclick="uploadImage()">업로드 및 분석</button>
+    <div id="result"></div>
+</body>
+</html>
+
+7
+config/views.py , 생성. 
+내용. 
+from django.shortcuts import render
+
+def index(request):
+    return render(request, 'index.html')
+
+8
+config/urls.py 
+
+from cnnTest.views import classify_image
+from config.views import index
+
+urlpatterns = [
+	...
+    path('', index),
+
+]
+
+9
+cnnTest/models.py 
+
+모델 경로를 수정.
+
+# 모델 로드 함수
+def load_model():
+    model_path = os.path.join(settings.BASE_DIR, "custom_cnn.pth")
+	
+
+10
+서버 시작시, 모두 허용으로 시작. 
+python manage.py runserver 0.0.0.0:8000
+
+장고 기본 보안 설정. csrf 토큰 활성화 -> 비활성화
+
+cnnTest/views.py
+
+@csrf_exempt  # CSRF 보호 비활성화
+def classify_image(request):
+
+11
+현재 모델이 학습이, 3채널 인식이 되어서, 
+png 파일 4채널 되어서 분류가 안되고, 
+jpg 파일 3채널 형식이어서, 분류가 됨. 
+======================================================
+1
+장고, 스웨거 확인
+
+스웨거를 설치해서, 자동으로 레스트 등록
+
+drf-yasg 설치
+먼저, drf-yasg 라이브러리를 설치합니다.
+(Yet Another Swagger Generator)
+
+pip install drf-yasg
+
+11
+INSTALLED_APPS = [
+...
+"drf_yasg",  # ✅ drf-yasg (Swagger) 추가
+]
+
+12
+라우팅 작업.
+urls.py
+
+from django.urls import path, re_path
+from rest_framework import permissions
+from drf_yasg.views import get_schema_view
+from drf_yasg import openapi
+
+# ✅ Swagger 설정
+schema_view = get_schema_view(
+    openapi.Info(
+        title="Django API 문서",
+        default_version="v1",
+        description="Django REST Framework를 사용한 API 문서",
+        terms_of_service="https://www.google.com/policies/terms/",
+        contact=openapi.Contact(email="admin@example.com"),
+        license=openapi.License(name="MIT License"),
+    ),
+    public=True,
+    permission_classes=(permissions.AllowAny,),  # 모든 사용자 접근 가능
+)
+
+urlpatterns = [
+    # ✅ Swagger UI (웹 브라우저용)
+    path("swagger/", schema_view.with_ui("swagger", cache_timeout=0), name="schema-swagger-ui"),
+
+    # ✅ ReDoc (대체 UI)
+    path("redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"),
+
+    # ✅ API 명세 (JSON / YAML)
+    re_path(r"^swagger(?P<format>\.json|\.yaml)$", schema_view.without_ui(cache_timeout=0), name="schema-json"),
+]
+
+13
+확인
+http://localhost:8000/swagger
+
+- 장고에서, drf 설치. 
+1.
+Django REST Framework 설치,
+pip install djangorestframework
+
+2.
+INSTALLED_APPS 설정
+
+Django의 settings.py 파일을 열고, INSTALLED_APPS에 rest_framework를 추가합니다.
+
+INSTALLED_APPS = [
+    ...
+    "rest_framework",  # ✅ Django REST Framework 추가
+]
+
+기존 
+cnnTest/views.py 
+
+만약, Response , 모듈 인식 안될시. 
+pip install Response , 수동 설치 하기. 
+
+
+추가, 
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
+from rest_framework import status
+from rest_framework.response import Response
+
+class ImageClassificationAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        if 'image' not in request.FILES:
+            from rest_framework.response import Response
+            from rest_framework import status
+            return Response({'error': 'No image provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        image_file = request.FILES['image']
+        if not isinstance(image_file, InMemoryUploadedFile):
+            return Response({'error': 'Invalid file type'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            image = Image.open(image_file).convert('RGB')
+            image = transform_image(image)
+
+            with torch.no_grad():
+                output = model(image)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
+                predicted_idx = torch.argmax(probabilities).item()
+                confidence = probabilities[predicted_idx].item()
+
+            response_data = {
+                'class': class_names[predicted_idx],
+                'confidence': round(confidence * 100, 2)
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+시리얼라이저 작업, 객체 -> json 형식으로 변경하는 도구. 
+직렬화, 역직렬화 
+
+추가 
+cnnTest/views.py 
+
+# Serializer 정의
+class ImageUploadSerializer(serializers.Serializer):
+    image = serializers.ImageField()
+	
+# 라우터 등록
+router = DefaultRouter()
+router.register(r'classify-image', ImageClassificationViewSet, basename='classify-image')
+
+# URL 패턴 등록
+urlpatterns = [
+...
+     path('api/', include(router.urls)),  # URL 패턴 수정
+]
+
+샘플 코드 , 복사 하기. 
+=========================================================
+# 임포트 참고
+# Create your views here.
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+import json
+from django.shortcuts import render
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
+from rest_framework import status, serializers, viewsets
+from rest_framework.response import Response
+
+from config.forms import ImageUploadForm
+from .models import load_model
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+
+# 이미지 변환 함수
+def transform_image(image):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    image = transform(image).unsqueeze(0)  # 배치 차원 추가
+    return image
+
+#임시로 , 시리얼라이저 클래스 등록하기.
+# Serializer 정의
+class ImageUploadSerializer(serializers.Serializer):
+    image = serializers.ImageField()
+
+
+# ViewSet 정의
+class ImageClassificationViewSet(viewsets.ViewSet):
+    permission_classes = [AllowAny]
+	#스웨거에서, 파일 업로드 안보일 때 설정 코드.
+    parser_classes = (MultiPartParser, FormParser)
+
+    @swagger_auto_schema(
+        manual_parameters=[
+            openapi.Parameter(
+                "image",
+                openapi.IN_FORM,
+                description="업로드할 이미지 파일",
+                type=openapi.TYPE_FILE
+            )
+        ]
+    )
+
+
+    def create(self, request, *args, **kwargs):
+        serializer = ImageUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        image_file = serializer.validated_data['image']
+        if not isinstance(image_file, InMemoryUploadedFile):
+            return Response({'error': 'Invalid file type'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            image = Image.open(image_file).convert('RGB')
+            image = transform_image(image)
+
+            with torch.no_grad():
+                output = model(image)
+                probabilities = torch.nn.functional.softmax(output[0], dim=0)
+                predicted_idx = torch.argmax(probabilities).item()
+                confidence = probabilities[predicted_idx].item()
+
+            response_data = {
+                'class': class_names[predicted_idx],
+                'confidence': round(confidence * 100, 2)
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+============================================================
+
+
+14
+기존, 서버사이드로 작업했고, 
+REST 버전으로 변경하기. 
+
+
+
+
+
+2
+포스트맨으로 확인. 
+
+주소: http://localhost:8000/api/classify-image/
+키 : image 
+값 : 사진 파일 선택. 
+
+
